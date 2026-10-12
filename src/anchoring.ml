@@ -61,7 +61,11 @@ module Target = struct
     match check_factor factor with
     | Error _ as e -> return e
     | Ok () ->
-      (match%bind Price_anchor.Source.of_series path with
+      (match%bind
+         Monitor.try_with_or_error ~extract_exn:true (fun () ->
+           Price_anchor.Source.of_series path)
+         >>| Or_error.join
+       with
        | Error _ as e -> return e
        | Ok pipe ->
          let%map items = Pipe.to_list pipe in
