@@ -10,6 +10,7 @@
   core
   equities-core
   exchange-core
-  exchange-core-engine)
+  exchange-core-engine
+  market-data)
  (preprocess
   (pps ppx_jane)))

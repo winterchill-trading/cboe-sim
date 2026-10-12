@@ -10,7 +10,7 @@ let elapsed s = Time_ns.Span.of_sec s
 let print_prices target spans =
   List.iter spans ~f:(fun s ->
     printf
-      "%8.0fs %s\n"
+      "%8.1fs %s\n"
       s
       (E.Price.to_string (Anchoring.Target.price_at target ~elapsed:(elapsed s))))
 ;;
@@ -20,10 +20,10 @@ let%expect_test "fixed price with a compounded daily drift" =
   print_prices target [ 0.; 43_200.; 86_400.; 172_800. ];
   [%expect
     {|
-           0s 200
-       43200s 200.99751242
-       86400s 202
-      172800s 204.02
+         0.0s 200
+     43200.0s 200.99751242
+     86400.0s 202
+    172800.0s 204.02
     |}];
   print_s [%sexp (Anchoring.Target.parse_fixed "200" |> ok_exn : Anchoring.Target.t)];
   [%expect {| (Fixed (price 200) (drift_bps_per_day 0)) |}];
@@ -48,12 +48,12 @@ let%expect_test "series: a step function from its first point, last price held" 
   print_prices target [ 0.; 9.; 10.; 15.; 20.; 3600. ];
   [%expect
     {|
-           0s 100
-           9s 100
-          10s 101
-          15s 101
-          20s 99.5
-        3600s 99.5
+       0.0s 100
+       9.0s 100
+      10.0s 101
+      15.0s 101
+      20.0s 99.5
+    3600.0s 99.5
     |}];
   print_s [%sexp (Result.is_error (Anchoring.Target.series []) : bool)];
   [%expect {| true |}]
@@ -72,8 +72,72 @@ let%expect_test "series file through price-anchor's parser, scaled" =
     let target = ok_exn target in
     print_prices target [ 0.; 5. ];
     [%expect {|
-             0s 650
-             5s 651
+      0.0s 650
+      5.0s 651
+      |}])
+;;
+
+let%expect_test "recorded crypto reference from event logs, one point per second" =
+  Async.Thread_safe.block_on_async_exn (fun () ->
+    let open Async in
+    let dir = Filename_unix.temp_dir "norm" "" in
+    let instrument = Market_data.Instrument.create Binance "BTCUSDT" in
+    let at ms = Time_ns.add t0 (Time_ns.Span.of_int_ms ms) in
+    let trade ms p =
+      Market_data.Event.Trade
+        { instrument
+        ; exch_ts = at ms
+        ; recv_ts = at ms
+        ; price = px p
+        ; size = E.Size.of_string "0.1"
+        ; side = Buy
+        ; trade_id = Int.to_string ms
+        }
+    in
+    let bbo ms bid ask =
+      Market_data.Event.Bbo
+        { instrument
+        ; exch_ts = at ms
+        ; recv_ts = at ms
+        ; bid_price = px bid
+        ; bid_size = E.Size.of_string "1"
+        ; ask_price = px ask
+        ; ask_size = E.Size.of_string "1"
+        }
+    in
+    let writer = Market_data.Event_log.Writer.create ~dir () in
+    List.iter
+      [ trade 0 "100000"
+      ; bbo 400 "100010" "100012"
+      ; trade 1_200 "100100"
+      ; bbo 1_900 "100200" "100202"
+      ; trade 5_000 "99000"
+      ]
+      ~f:(Market_data.Event_log.Writer.append writer);
+    let%bind () = Market_data.Event_log.Writer.close writer in
+    let date = Date.of_string "2026-10-13" in
+    let%bind target =
+      Anchoring.Target.load_norm ~factor:0.006 ~dir instrument ~from:date ~to_:date
+    in
+    (* The last price in each second: the BBO mids at 0.4 s and 1.9 s, the trade at 5 s. *)
+    print_prices (ok_exn target) [ 0.; 1.; 1.5; 4.6; 10. ];
+    let%map missing =
+      Anchoring.Target.load_norm
+        ~factor:0.006
+        ~dir
+        instrument
+        ~from:(Date.add_days date 1)
+        ~to_:(Date.add_days date 1)
+    in
+    print_s [%sexp (Result.is_error missing : bool)];
+    [%expect
+      {|
+           0.0s 600.066
+           1.0s 600.066
+           1.5s 601.206
+           4.6s 594
+          10.0s 594
+      true
       |}])
 ;;
 
