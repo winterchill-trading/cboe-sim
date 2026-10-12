@@ -32,6 +32,42 @@ let or_exit = function
     Stdlib.exit 2
 ;;
 
+(* [VENUE:SYMBOL=SIM,FACTOR] *)
+let parse_scaled s =
+  let reference, rest = assignment ~flag:"-anchor-scaled" s in
+  match String.lsplit2 rest ~on:',' with
+  | Some (symbol, factor) ->
+    (match Float.of_string_opt factor with
+     | Some factor -> Market_data.Instrument.of_string reference, symbol, factor
+     | None ->
+       Core.eprintf "-anchor-scaled: bad factor %S\n" factor;
+       Stdlib.exit 2)
+  | None ->
+    Core.eprintf "-anchor-scaled: expected VENUE:SYMBOL=SIM,FACTOR, got %S\n" s;
+    Stdlib.exit 2
+;;
+
+let load_scaled ~norm ~from ~to_ scaled =
+  match scaled, norm with
+  | [], _ -> return []
+  | _ :: _, None ->
+    Core.eprintf "-anchor-scaled needs -anchor-norm DIR\n";
+    Stdlib.exit 2
+  | _ :: _, Some dir ->
+    let from, to_ =
+      match from, to_ with
+      | Some from, Some to_ -> from, to_
+      | Some d, None | None, Some d -> d, d
+      | None, None ->
+        Core.eprintf "-anchor-scaled needs -anchor-from DATE (and -anchor-to DATE)\n";
+        Stdlib.exit 2
+    in
+    Deferred.List.map ~how:`Sequential scaled ~f:(fun s ->
+      let reference, symbol, factor = parse_scaled s in
+      let%map target = Anchoring.Target.load_norm ~factor ~dir reference ~from ~to_ in
+      symbol, or_exit target)
+;;
+
 let load_anchors ~series ~fixed =
   let%map series =
     Deferred.List.map ~how:`Sequential series ~f:(fun s ->
@@ -112,6 +148,22 @@ let command =
          ~doc:
            "PRICE[,DRIFT_BPS_PER_DAY]=SYM anchor SYM's noise traders to a fixed price \
             with an optional daily drift (repeatable)"
+     and anchor_scaled =
+       flag
+         "-anchor-scaled"
+         (listed string)
+         ~doc:
+           "VENUE:SYMBOL=SYM,FACTOR anchor SYM to a recorded reference (trade prices and \
+            BBO mids from -anchor-norm) multiplied by FACTOR (repeatable)"
+     and anchor_norm =
+       flag
+         "-anchor-norm"
+         (optional string)
+         ~doc:"DIR normalized event logs (the recorder's norm/ tree) for -anchor-scaled"
+     and anchor_from =
+       flag "-anchor-from" (optional date) ~doc:"DATE first UTC day for -anchor-scaled"
+     and anchor_to =
+       flag "-anchor-to" (optional date) ~doc:"DATE last UTC day (default: -anchor-from)"
      and anchor_half_life_ms =
        flag
          "-anchor-half-life-ms"
@@ -121,6 +173,10 @@ let command =
      fun () ->
        Log.Global.set_output [ Log.Output.stderr () ];
        let%bind anchors = load_anchors ~series:anchor_series ~fixed:anchor_fixed in
+       let%bind scaled =
+         load_scaled ~norm:anchor_norm ~from:anchor_from ~to_:anchor_to anchor_scaled
+       in
+       let anchors = anchors @ scaled in
        if anchor_half_life_ms <= 0
        then (
          Core.eprintf "-anchor-half-life-ms must be positive\n";

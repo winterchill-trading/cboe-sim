@@ -11,7 +11,8 @@
   core
   core_unix.command_unix
   equities-core
-  exchange-core)
+  exchange-core
+  market-data)
  (preprocess
   (pps ppx_jane)))
 
