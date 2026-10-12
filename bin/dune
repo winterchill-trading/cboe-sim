@@ -1,0 +1,18 @@
+; The main module is [main] rather than [cboe_sim] so that it does not clash with the
+; [cboe_sim] library's wrapper module.
+
+(executable
+ (name main)
+ (public_name cboe-sim)
+ (modules main)
+ (libraries async cboe-sim core core_unix.command_unix equities-core)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
+ (name cli)
+ (public_name cboe-sim-cli)
+ (modules cli)
+ (libraries async cboe-sim cboe-sim.wire core core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))
