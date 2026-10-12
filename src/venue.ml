@@ -16,10 +16,18 @@ module Config = struct
     ; seed : int
     ; noise_traders : int
     ; auction_lead : Time_ns.Span.t
+    ; anchors : (string * Anchoring.Target.t) list
+    ; anchor_half_life : Time_ns.Span.t
     }
 
   let default =
-    { noise = true; seed = 0; noise_traders = 6; auction_lead = Time_ns.Span.of_min 5. }
+    { noise = true
+    ; seed = 0
+    ; noise_traders = 6
+    ; auction_lead = Time_ns.Span.of_min 5.
+    ; anchors = []
+    ; anchor_half_life = Time_ns.Span.second
+    }
   ;;
 end
 
@@ -73,6 +81,7 @@ type listing =
   ; mutable ssr : Order_types.Ssr.t
   ; mutable ssr_published : bool
   ; sim : Market_sim.t option
+  ; anchor : Anchoring.t option
   ; mutable auction_orders : order list (** oldest first *)
   }
 
@@ -1342,6 +1351,27 @@ let ssr_status t (l : listing) =
     feed t ~unit:l.inst.unit (trading_status t l.inst))
 ;;
 
+(* The anchor follows its reference only in continuous core trading: not during the
+   auction windows before the open and the close, LULD pauses, or outside core hours. *)
+let anchor_follows t (l : listing) ~phase =
+  (not l.paused)
+  && ((not (Clock.has_sessions t.clock))
+      || (Phase.equal phase Core && Option.is_none (in_auction_window t ~phase)))
+;;
+
+let update_anchors t ~phase =
+  List.iter (all_listings t) ~f:(fun l ->
+    match l.anchor, l.sim with
+    | Some anchor, Some sim ->
+      Anchoring.update
+        anchor
+        ~now:(Clock.now t.clock)
+        ~follow:(anchor_follows t l ~phase)
+        ~sim
+        ~symbol:l.lsym
+    | None, _ | _, None -> ())
+;;
+
 let tick t =
   step t;
   drain t;
@@ -1351,6 +1381,7 @@ let tick t =
     let from = t.last_phase in
     t.last_phase <- phase;
     on_phase_change t ~from ~to_:phase);
+  update_anchors t ~phase;
   if Clock.has_sessions t.clock
   then (
     let now = Time_ns.now () in
@@ -1412,6 +1443,12 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
     }
   in
   step t;
+  List.iter config.anchors ~f:(fun (symbol, _) ->
+    match List.find instruments ~f:(fun i -> String.equal i.symbol symbol) with
+    | None -> raise_s [%message "anchor for a symbol that is not listed" symbol]
+    | Some _ when not (config.noise && config.noise_traders > 0) ->
+      raise_s [%message "anchors need noise traders (-noise)" symbol]
+    | Some _ -> ());
   List.iteri instruments ~f:(fun i inst ->
     let lsym = E.Symbol.of_string inst.symbol in
     let sim =
@@ -1448,9 +1485,15 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
         ; ssr = Order_types.Ssr.inactive
         ; ssr_published = false
         ; sim
+        ; anchor =
+            Option.bind sim ~f:(fun _ ->
+              List.Assoc.find config.anchors inst.symbol ~equal:String.equal
+              |> Option.map ~f:(Anchoring.create ~half_life:config.anchor_half_life))
         ; auction_orders = []
         });
   t
 ;;
 
+let anchor t symbol = Option.bind (Hashtbl.find t.listings symbol) ~f:(fun l -> l.anchor)
+let market_sim t symbol = Option.bind (Hashtbl.find t.listings symbol) ~f:(fun l -> l.sim)
 let open_order_count t ~user = Hashtbl.count t.live ~f:(fun o -> String.equal o.user user)

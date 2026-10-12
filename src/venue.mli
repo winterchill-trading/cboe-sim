@@ -28,6 +28,11 @@ module Config : sig
     ; noise_traders : int (** per listing *)
     ; auction_lead : Time_ns.Span.t
     (** Auction Update messages start this long before the open and the close *)
+    ; anchors : (string * Anchoring.Target.t) list
+    (** listings whose noise traders follow a reference price ({!Anchoring}); each needs
+        noise traders, so not the test symbols *)
+    ; anchor_half_life : Time_ns.Span.t
+    (** how fast the noise walk is pulled towards the reference (default 1 s) *)
     }
 
   val default : t
@@ -59,6 +64,15 @@ val tick : t -> unit
 
 (** The Trading Status message a feed client should see for a listing now. *)
 val trading_status : t -> Instruments.t -> Pitch.Message.t
+
+(** The listing's anchor, if [Config.anchors] names it. It follows the reference only in
+    the core session outside the auction windows ([Config.auction_lead] before the open
+    and the close) and LULD pauses; otherwise the venue owns the price and the walk is
+    free. With the [Always_open] clock it always follows unless paused. *)
+val anchor : t -> string -> Anchoring.t option
+
+(** The listing's noise traders, when [Config.noise] is on. *)
+val market_sim : t -> string -> Exchange_core_engine.Market_sim.t option
 
 (** Resting order count of a user, for tests and logs. *)
 val open_order_count : t -> user:string -> int
