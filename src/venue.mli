@@ -22,7 +22,8 @@ open Cboe_wire
 
 module Config : sig
   type t =
-    { noise : bool (** run noise traders on every listing *)
+    { noise : bool
+    (** run noise traders on every listing except test symbols such as ZVZZT *)
     ; seed : int
     ; noise_traders : int (** per listing *)
     ; auction_lead : Time_ns.Span.t

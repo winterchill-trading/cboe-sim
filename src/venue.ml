@@ -1415,7 +1415,10 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
   List.iteri instruments ~f:(fun i inst ->
     let lsym = E.Symbol.of_string inst.symbol in
     let sim =
-      if config.noise && config.noise_traders > 0
+      let is_test_symbol =
+        List.mem Symbol.Equity.default_test_symbols inst.symbol ~equal:String.equal
+      in
+      if config.noise && config.noise_traders > 0 && not is_test_symbol
       then (
         let min_notional, max_notional =
           if Instruments.is_option inst then 20., 400. else 2_000., 40_000.
