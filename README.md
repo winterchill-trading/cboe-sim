@@ -62,52 +62,79 @@ caches the built opam switch between runs.
 ## Price anchor
 
 There is no real-time Cboe data to shadow, so an anchor does not place reference levels
-or replay reference trades (the crypto simulators do, through `price-anchor`). It pulls a
-listing's noise traders towards a reference price instead: each 100 ms tick the noise
-walk moves by its random step plus `k * (anchor - walk)` with
-`k = 1 - 0.5 ** (tick / half_life)` (`Market_sim.set_reference ~half_life`), so the book,
-the trades and the mark follow the reference with noise around it. The reference is one
-of:
+or replay reference trades (the crypto simulators do). It pulls a listing's noise traders
+towards a reference price instead: each 100 ms tick the noise walk moves by its random
+step plus `k * (anchor - walk)` with `k = 1 - 0.5 ** (tick / half_life)`
+(`Market_sim.set_reference ~half_life`), so the book, the trades and the mark follow the
+reference with noise around it.
+
+`Anchoring` is a thin wrapper over `price-anchor`'s `Anchor`: one per anchored listing,
+created with the listing's noise trader count, `half_life` (`-anchor-half-life-ms`,
+default 1 s), `step_clock:false` (the venue owns its clock), `levels:0`, a zero
+`mark_interval`, and a `Path.t` pulled on the exchange's clock at every tick. The
+reference is one of:
 
 - a series file (`-anchor-series`): `<time> <price>` per line, the time in nanoseconds
-  since the epoch or ISO 8601 with a zone, `#` comments; parsed by `price-anchor`'s
-  `Source.of_series`. The first point is mapped to the simulator's start; the price is a
+  since the epoch or ISO 8601 with a zone, `#` comments (`Source.of_series`, then
+  `Source.to_path`). The first point is mapped to the simulator's start; the price is a
   step function of the points and holds the last one after the end;
 - a fixed price with an optional drift (`-anchor-fixed 250,20=AAPL`: 250, +20 bps per day
-  of simulator time);
+  of simulator time; `Path.fixed_of_string`);
 - a recorded crypto reference scaled into the listing's range
   (`-anchor-scaled binance:BTCUSDT=SPY,0.006 -anchor-norm data/norm -anchor-from
-  2026-10-01`): trade prices and BBO mids from the recorder's normalized event logs
-  (`price-anchor`'s `Source.of_norm`), the last one in each second.
+  2026-10-01`): the recorder's normalized event logs (`Source.of_norm`, then
+  `Source.to_path ~min_interval:1s`), the book mid (L2 or BBO) else the last trade, a
+  point kept when the price changed at least a second after the last one. The factor is
+  the anchor's `price_factor`, which rounds to the listing's tick.
 
-The anchor follows only in continuous core trading. In the auction windows (five minutes
-before the open and the close), during LULD pauses and outside core hours the venue owns
-the price: the walk goes back to its free random walk and the anchor waits, then
-resumes at the open or when the pause ends. LULD bands keep coming from this venue's own
-prints (the mean over the last five minutes), so an anchor that jumps further than the band
-trips a limit state and a pause like any fast market would. Anchors turn `-noise` on;
-the test symbol ZVZZT has no noise traders and cannot be anchored.
+The venue hands the anchor three callbacks:
+
+- `may_engage`: continuous core trading only. In the auction windows (five minutes
+  before the open and the close), during LULD pauses and outside core hours the venue
+  owns the price: the anchor gives the symbol back to the free random walk (a pause,
+  counted once per stretch) and waits.
+- `last_trade`: the venue's last print. When the anchor follows again (the open, the end
+  of a pause) the walk restarts from it and climbs back towards the reference.
+- `clamp`: `Clamp.within_bands` on the listing's LULD bands (from this venue's own
+  prints, the mean over the last five minutes), 30 bps inside them. A reference that
+  jumps further than the band moves the target only as far as the bands allow, and the
+  walk climbs with the bands as the prints move them, instead of tripping a limit state.
+
+Changes from the module this replaced (expect tests updated accordingly): `waits`
+counts the pause before the first follow too (it now counts pauses, including the
+initial one); `resumes` counts follows after a pause only; the walk restarts from the
+last print on resume; targets are clamped to the bands; recorded references keep the
+first change per second (book mids over trades) instead of the last price; scaled prices
+round to the tick. Anchors turn `-noise` on; the test symbol ZVZZT has no noise traders
+and cannot be anchored.
 
 `scripts/anchor-demo.sh` runs AAPL on a series (230, 236 after 10 s, 226 after 20 s)
-and MSFT on a fixed 400 (it lists at 420), and prints the top of both books. One run:
+and MSFT on a fixed 400 (it lists at 420), and prints the top of both books every five
+seconds. One run (2026-10-12, always-open clock, half-life 1 s):
 
 ```text
 == t+0s (AAPL anchor: 230)
-AAPL  bid    229.94  ask    230.02
-MSFT  bid    411.71  ask    417.77
+AAPL  bid    229.94  ask    230.05
+MSFT  bid    411.72  ask    417.79
 
-== t+5s (AAPL anchor: 230)
-AAPL  bid    229.96  ask    230.08
+== t+6s (AAPL anchor: 230)
+AAPL  bid    229.96  ask    230.04
 MSFT  bid    400.23  ask    400.35
 
-== t+15s (AAPL anchor: 236)
-AAPL  bid    235.74  ask    235.77
+== t+16s (AAPL anchor: 236)
+AAPL  bid    235.59  ask    235.74
 MSFT  bid    399.77  ask    400.09
 
-== t+25s (AAPL anchor: 226)
-AAPL  bid    226.18  ask    226.61
+== t+26s (AAPL anchor: 226)
+AAPL  bid    226.22  ask    226.31
 MSFT  bid    399.96  ask    399.99
+
+== t+31s (AAPL anchor: 226)
+AAPL  bid    225.91  ask    225.94
+MSFT  bid    399.76  ask    399.79
 ```
+
+Snapshots taken right after a step (t+11s, t+21s) show the book still in transit.
 
 Raw minute files are not a source here: their normalizers live in the venue client and
 feed repositories, and linking them all into a TradFi simulator is not worth it. Rebuild
