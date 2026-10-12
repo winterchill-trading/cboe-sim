@@ -13,8 +13,8 @@ options section. It speaks the venue's real public binary protocols over TCP:
   client can use them without binary parsing.
 
 **There is no real-time data for this venue.** Nothing here comes from Cboe: the books are
-driven by noise traders from `exchange-core-engine` (and later by a price anchor). Prices
-are plausible, not real.
+driven by noise traders from `exchange-core-engine`, optionally anchored to a reference
+price you choose (see [Price anchor](#price-anchor)). Prices are plausible, not real.
 
 Message layouts follow the public specifications summarised in
 `equities-core/docs/cboe-boe.md` and `equities-core/docs/cboe-pitch.md` (Cboe Titanium
@@ -41,6 +41,10 @@ Flags:
 | `-noise-traders N`, `-seed N` | 6, 0 | noise traders per listing, random seed |
 | `-clock` | `always-open` | `real` (New York time, NYSE calendar), `accelerated`, `always-open` |
 | `-clock-start`, `-clock-date`, `-clock-speed` | 09:25:00, today, 60 | accelerated clock: virtual start time and speed |
+| `-anchor-series FILE=SYM` | | anchor SYM to a series of `<time> <price>` lines (repeatable) |
+| `-anchor-fixed PRICE[,DRIFT]=SYM` | | anchor SYM to a fixed price, with a compounded drift in bps per day (repeatable) |
+| `-anchor-scaled VENUE:SYMBOL=SYM,FACTOR` | | anchor SYM to a recorded reference times FACTOR, from `-anchor-norm DIR -anchor-from DATE [-anchor-to DATE]` (repeatable) |
+| `-anchor-half-life-ms` | 1000 | half-life of the pull towards the anchor |
 
 `always-open` stays in the core session (no auctions), which is what you want to play.
 `accelerated` replays a whole day: pre-market, opening auction at 09:30, core session,
@@ -54,6 +58,60 @@ expiring 2026-12-18 at strikes 590/600/610, calls `SPY001`-`SPY003` and puts
 CI installs the pinned siblings and the opam dependencies through the shared
 [ox-setup](https://github.com/winterchill-trading/infra/blob/main/docs/ci.md) action, which
 caches the built opam switch between runs.
+
+## Price anchor
+
+There is no real-time Cboe data to shadow, so an anchor does not place reference levels
+or replay reference trades (the crypto simulators do, through `price-anchor`). It pulls a
+listing's noise traders towards a reference price instead: each 100 ms tick the noise
+walk moves by its random step plus `k * (anchor - walk)` with
+`k = 1 - 0.5 ** (tick / half_life)` (`Market_sim.set_reference ~half_life`), so the book,
+the trades and the mark follow the reference with noise around it. The reference is one
+of:
+
+- a series file (`-anchor-series`): `<time> <price>` per line, the time in nanoseconds
+  since the epoch or ISO 8601 with a zone, `#` comments; parsed by `price-anchor`'s
+  `Source.of_series`. The first point is mapped to the simulator's start; the price is a
+  step function of the points and holds the last one after the end;
+- a fixed price with an optional drift (`-anchor-fixed 250,20=AAPL`: 250, +20 bps per day
+  of simulator time);
+- a recorded crypto reference scaled into the listing's range
+  (`-anchor-scaled binance:BTCUSDT=SPY,0.006 -anchor-norm data/norm -anchor-from
+  2026-10-01`): trade prices and BBO mids from the recorder's normalized event logs
+  (`price-anchor`'s `Source.of_norm`), the last one in each second.
+
+The anchor follows only in continuous core trading. In the auction windows (five minutes
+before the open and the close), during LULD pauses and outside core hours the venue owns
+the price: the walk goes back to its free random walk and the anchor waits, then
+resumes at the open or when the pause ends. LULD bands keep coming from this venue's own
+prints (the mean over the last five minutes), so an anchor that jumps further than the band
+trips a limit state and a pause like any fast market would. Anchors turn `-noise` on;
+the test symbol ZVZZT has no noise traders and cannot be anchored.
+
+`scripts/anchor-demo.sh` runs AAPL on a series (230, 236 after 10 s, 226 after 20 s)
+and MSFT on a fixed 400 (it lists at 420), and prints the top of both books. One run:
+
+```text
+== t+0s (AAPL anchor: 230)
+AAPL  bid    229.94  ask    230.02
+MSFT  bid    411.71  ask    417.77
+
+== t+5s (AAPL anchor: 230)
+AAPL  bid    229.96  ask    230.08
+MSFT  bid    400.23  ask    400.35
+
+== t+15s (AAPL anchor: 236)
+AAPL  bid    235.74  ask    235.77
+MSFT  bid    399.77  ask    400.09
+
+== t+25s (AAPL anchor: 226)
+AAPL  bid    226.18  ask    226.61
+MSFT  bid    399.96  ask    399.99
+```
+
+Raw minute files are not a source here: their normalizers live in the venue client and
+feed repositories, and linking them all into a TradFi simulator is not worth it. Rebuild
+`norm/` with the recorder (`market-recorder rebuild-norm`) and use `-anchor-scaled`.
 
 ## Play with the CLI
 
@@ -121,7 +179,8 @@ The binary codecs are a separate library, `cboe-sim.wire` (`Boe`, `Pitch`, `Bitf
 - Auction executions of book orders cancel and re-place the remainder in the engine; they
   are not settled in the engine's clearinghouse. Auction-only executions appear only in
   the Auction Summary, not as Trade messages. No halt reopening auction after a LULD pause.
-- LULD reference price is the mark (noise walk or last trade), not the 5-minute average;
+- LULD reference price is the mean of this venue's prints over the last five minutes (the
+  mark when there were none), recomputed on every check rather than only on 1% moves;
   there is no SIP, so "national" best bid and offer are this book's.
 - Options trade on their own random walk, not linked to SPY; no option LULD or auctions.
 - Fees use the equities-core BZX-like schedule inside the engine but are not reported.
