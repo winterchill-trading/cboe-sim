@@ -13,7 +13,9 @@
   exchange-core-engine
   fixed-decimal
   http
+  market-data
   order-book
+  price-anchor
   uri
   yojson)
  (preprocess

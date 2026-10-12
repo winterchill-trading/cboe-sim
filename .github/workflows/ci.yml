@@ -16,5 +16,8 @@ jobs:
             order-book https://github.com/winterchill-trading/order-book.git
             exchange-core-engine https://github.com/winterchill-trading/exchange-core.git
             equities-core https://github.com/winterchill-trading/equities-core.git
+            parquet https://github.com/winterchill-trading/parquet.git
+            market-data https://github.com/winterchill-trading/market-data.git
+            price-anchor https://github.com/winterchill-trading/price-anchor.git
       - run: opam exec -- dune build
       - run: opam exec -- dune test
