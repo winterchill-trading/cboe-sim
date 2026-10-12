@@ -71,6 +71,10 @@ val trading_status : t -> Instruments.t -> Pitch.Message.t
     free. With the [Always_open] clock it always follows unless paused. *)
 val anchor : t -> string -> Anchoring.t option
 
+(** The LULD reference price: the mean of the listing's prints on this venue over the last
+    five minutes, else the mark. Anchoring moves it only through those prints. *)
+val luld_reference : t -> string -> Exchange_core.Price.t option
+
 (** The listing's noise traders, when [Config.noise] is on. *)
 val market_sim : t -> string -> Exchange_core_engine.Market_sim.t option
 

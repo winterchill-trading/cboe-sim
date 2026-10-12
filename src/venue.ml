@@ -82,6 +82,9 @@ type listing =
   ; mutable ssr_published : bool
   ; sim : Market_sim.t option
   ; anchor : Anchoring.t option
+  ; trades : (Time_ns.t * Price.t) Queue.t
+  (** this venue's prints in the LULD reference window, oldest first *)
+  ; mutable trades_units : int (** sum of [trades]' prices, in price units *)
   ; mutable auction_orders : order list (** oldest first *)
   }
 
@@ -363,11 +366,27 @@ let attach t (o : order) oid =
 ;;
 
 let date t = fst (Clock.local t.clock)
+let luld_window = Time_ns.Span.of_min 5.
+
+let prune_trades t (l : listing) =
+  let cutoff = Time_ns.sub (Clock.now t.clock) luld_window in
+  while
+    match Queue.peek l.trades with
+    | Some (at, _) -> Time_ns.( < ) at cutoff
+    | None -> false
+  do
+    let _, px = Queue.dequeue_exn l.trades in
+    l.trades_units <- l.trades_units - Price.to_units px
+  done
+;;
 
 let on_trade t (l : listing) ~price =
   match l.inst.kind with
   | Option _ -> ()
   | Equity _ ->
+    Queue.enqueue l.trades (Clock.now t.clock, price);
+    l.trades_units <- l.trades_units + Price.to_units price;
+    prune_trades t l;
     l.ssr
     <- Order_types.Ssr.on_trade
          l.ssr
@@ -559,8 +578,13 @@ let bands (l : listing) ~at ~reference =
   | Equity { tier } -> Some (Halts.luld_bands tier ~reference ~at)
 ;;
 
+(* The LULD reference price: the mean of this venue's own prints over the last five
+   minutes (auction prints included), else the mark, else the listing's reference. *)
 let reference_price t (l : listing) =
-  Option.value (Exchange.mark t.exchange l.lsym) ~default:l.inst.reference_price
+  prune_trades t l;
+  match Queue.length l.trades with
+  | 0 -> Option.value (Exchange.mark t.exchange l.lsym) ~default:l.inst.reference_price
+  | n -> Price.of_units (l.trades_units / n)
 ;;
 
 let best_bid t (l : listing) =
@@ -1489,11 +1513,18 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
             Option.bind sim ~f:(fun _ ->
               List.Assoc.find config.anchors inst.symbol ~equal:String.equal
               |> Option.map ~f:(Anchoring.create ~half_life:config.anchor_half_life))
+        ; trades = Queue.create ()
+        ; trades_units = 0
         ; auction_orders = []
         });
   t
 ;;
 
 let anchor t symbol = Option.bind (Hashtbl.find t.listings symbol) ~f:(fun l -> l.anchor)
+
+let luld_reference t symbol =
+  Option.map (Hashtbl.find t.listings symbol) ~f:(fun l -> reference_price t l)
+;;
+
 let market_sim t symbol = Option.bind (Hashtbl.find t.listings symbol) ~f:(fun l -> l.sim)
 let open_order_count t ~user = Hashtbl.count t.live ~f:(fun o -> String.equal o.user user)
