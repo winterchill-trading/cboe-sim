@@ -1,0 +1,18 @@
+(library
+ (name cboe_sim)
+ (public_name cboe-sim)
+ (libraries
+  async
+  async_websocket
+  cboe-sim.wire
+  cohttp-async
+  core
+  equities-core
+  exchange-core
+  exchange-core-engine
+  fixed-decimal
+  http
+  order-book
+  yojson)
+ (preprocess
+  (pps ppx_jane)))
