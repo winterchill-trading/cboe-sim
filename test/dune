@@ -1,0 +1,8 @@
+(library
+ (name cboe_sim_test)
+ (inline_tests
+  (flags
+   (:standard -source-tree-root .)))
+ (libraries core cboe-sim.wire)
+ (preprocess
+  (pps ppx_jane)))
