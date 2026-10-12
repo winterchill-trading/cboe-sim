@@ -24,9 +24,11 @@
   core
   core_unix
   async
+  cohttp
   cohttp-async
   http
   async_websocket
+  uri
   yojson
   fixed-decimal
   exchange-core
