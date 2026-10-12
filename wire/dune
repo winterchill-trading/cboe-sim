@@ -1,0 +1,9 @@
+; Binary codecs for Cboe BOE v2 and PITCH 2.X, shared by the simulator, its CLI and any
+; future client.
+
+(library
+ (name cboe_wire)
+ (public_name cboe-sim.wire)
+ (libraries core)
+ (preprocess
+  (pps ppx_jane)))
