@@ -5,7 +5,13 @@
  (name main)
  (public_name cboe-sim)
  (modules main)
- (libraries async cboe-sim core core_unix.command_unix equities-core)
+ (libraries
+  async
+  cboe-sim
+  core
+  core_unix.command_unix
+  equities-core
+  exchange-core)
  (preprocess
   (pps ppx_jane)))
 
