@@ -68,7 +68,8 @@ val trading_status : t -> Instruments.t -> Pitch.Message.t
 (** The listing's anchor, if [Config.anchors] names it. It follows the reference only in
     the core session outside the auction windows ([Config.auction_lead] before the open
     and the close) and LULD pauses; otherwise the venue owns the price and the walk is
-    free. With the [Always_open] clock it always follows unless paused. *)
+    free; following again, the walk restarts from the venue's last print. Targets are kept
+    inside the LULD bands. With the [Always_open] clock it always follows unless paused. *)
 val anchor : t -> string -> Anchoring.t option
 
 (** The LULD reference price: the mean of the listing's prints on this venue over the last

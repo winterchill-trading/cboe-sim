@@ -1,14 +1,10 @@
 open! Core
 open! Async
 open! Exchange_core
-module Market_sim = Exchange_core_engine.Market_sim
-
-let scale_price px ~factor =
-  if Float.equal factor 1.
-  then px
-  else
-    Price.of_units (Float.iround_nearest_exn (Float.of_int (Price.to_units px) *. factor))
-;;
+module Anchor = Price_anchor.Anchor
+module Path = Price_anchor.Path
+module Source = Price_anchor.Source
+module Exchange = Exchange_core_engine.Exchange
 
 let check_factor factor =
   if Float.is_finite factor && Float.( > ) factor 0.
@@ -18,130 +14,47 @@ let check_factor factor =
 
 module Target = struct
   type t =
-    | Series of (Time_ns.t * Price.t) array
-    | Fixed of
-        { price : Price.t
-        ; drift_bps_per_day : float
-        }
+    { path : Path.t
+    ; price_factor : float
+    ; reference : Market_data.Instrument.t option
+    }
   [@@deriving sexp_of]
 
-  let positive px =
-    if Price.( > ) px Price.zero
-    then Ok ()
-    else Or_error.error_s [%message "reference price must be positive" (px : Price.t)]
+  let of_path ?reference ?(price_factor = 1.) path = { path; price_factor; reference }
+  let series points = Path.series points |> Or_error.map ~f:of_path
+
+  let fixed ?drift_bps_per_day price =
+    Path.fixed ?drift_bps_per_day price |> Or_error.map ~f:of_path
   ;;
 
-  let series points =
-    let open Or_error.Let_syntax in
-    let%bind () = Or_error.all_unit (List.map points ~f:(fun (_, px) -> positive px)) in
-    match List.stable_sort points ~compare:(fun (a, _) (b, _) -> Time_ns.compare a b) with
-    | [] -> Or_error.error_string "empty reference series"
-    | points -> Ok (Series (Array.of_list points))
-  ;;
+  let parse_fixed s = Path.fixed_of_string s |> Or_error.map ~f:of_path
 
-  let fixed ?(drift_bps_per_day = 0.) price =
-    let open Or_error.Let_syntax in
-    let%bind () = positive price in
-    if Float.is_finite drift_bps_per_day
-    then Ok (Fixed { price; drift_bps_per_day })
-    else Or_error.error_s [%message "drift must be finite" (drift_bps_per_day : float)]
-  ;;
-
-  let parse_fixed s =
-    Or_error.try_with_join (fun () ->
-      match String.split s ~on:',' with
-      | [ px ] -> fixed (Price.of_string px)
-      | [ px; drift ] ->
-        fixed ~drift_bps_per_day:(Float.of_string drift) (Price.of_string px)
-      | _ -> Or_error.error_string "expected <price>[,<drift_bps_per_day>]")
-    |> Or_error.tag_s ~tag:[%message "fixed anchor" s]
-  ;;
-
-  let load_series ?(factor = 1.) path =
+  let load_source ?reference ?min_interval ~factor source =
     match check_factor factor with
     | Error _ as e -> return e
     | Ok () ->
-      (match%bind
-         Monitor.try_with_or_error ~extract_exn:true (fun () ->
-           Price_anchor.Source.of_series path)
-         >>| Or_error.join
-       with
-       | Error _ as e -> return e
-       | Ok pipe ->
-         let%map items = Pipe.to_list pipe in
-         List.filter_map items ~f:(function
-           | Price { recv_ts; price } -> Some (recv_ts, scale_price price ~factor)
-           | Event _ | Gap _ -> None)
-         |> series)
+      Deferred.Or_error.bind source ~f:(fun source ->
+        Source.to_path ?min_interval source
+        |> Deferred.Or_error.map ~f:(of_path ?reference ~price_factor:factor))
   ;;
 
-  let event_price : Market_data.Event.t -> _ = function
-    | Trade trade -> Some (trade.recv_ts, trade.price)
-    | Bbo bbo -> Some (bbo.recv_ts, Market_data.Bbo.mid bbo)
-    | L2 _ | Funding _ -> None
-  ;;
+  let load_series ?(factor = 1.) path = load_source ~factor (Source.of_series path)
 
   let load_norm ?(resolution = Time_ns.Span.second) ~factor ~dir instrument ~from ~to_ =
-    match check_factor factor with
-    | Error _ as e -> return e
-    | Ok () ->
-      (match%bind Price_anchor.Source.of_norm ~dir instrument ~from ~to_ with
-       | Error _ as e -> return e
-       | Ok pipe ->
-         let bucket ts =
-           Time_ns.to_int_ns_since_epoch ts / Time_ns.Span.to_int_ns resolution
-         in
-         (* Points in reverse; the head is replaced while it is in the same bucket. *)
-         let acc = ref [] in
-         let%map () =
-           Pipe.iter_without_pushback pipe ~f:(function
-             | Gap _ | Price _ -> ()
-             | Event e ->
-               Option.iter (event_price e) ~f:(fun (ts, px) ->
-                 if Market_data.Instrument.equal
-                      (Market_data.Event.instrument e)
-                      instrument
-                 then (
-                   let point = ts, scale_price px ~factor in
-                   match !acc with
-                   | (last, _) :: rest when bucket last = bucket ts ->
-                     acc := point :: rest
-                   | points -> acc := point :: points)))
-         in
-         series (List.rev !acc)
-         |> Or_error.tag_s
-              ~tag:
-                [%message
-                  "no trade or BBO prices"
-                    (instrument : Market_data.Instrument.t)
-                    (from : Date.t)
-                    (to_ : Date.t)])
+    load_source
+      ~reference:instrument
+      ~min_interval:resolution
+      ~factor
+      (Source.of_norm ~dir instrument ~from ~to_)
   ;;
 
-  let ns_per_day = Time_ns.Span.to_int_ns Time_ns.Span.day
-
   let price_at t ~elapsed =
-    match t with
-    | Fixed { price; drift_bps_per_day } ->
-      if Float.equal drift_bps_per_day 0.
-      then price
-      else (
-        let days =
-          Float.of_int (Time_ns.Span.to_int_ns elapsed) /. Float.of_int ns_per_day
-        in
-        scale_price price ~factor:((1. +. (drift_bps_per_day /. 10_000.)) **. days))
-    | Series points ->
-      let first, _ = points.(0) in
-      let at = Time_ns.add first elapsed in
-      (match
-         Array.binary_search
-           points
-           ~compare:(fun (time, _) at -> Time_ns.compare time at)
-           `Last_less_than_or_equal_to
-           at
-       with
-       | Some i -> snd points.(i)
-       | None -> snd points.(0))
+    let px = Path.price_at t.path ~elapsed in
+    if Float.equal t.price_factor 1.
+    then px
+    else
+      Price.of_units
+        (Float.iround_nearest_exn (Float.of_int (Price.to_units px) *. t.price_factor))
   ;;
 end
 
@@ -154,57 +67,56 @@ end
 
 type t =
   { target : Target.t
-  ; half_life : Time_ns.Span.t
-  ; mutable started_at : Time_ns.t option
-  ; mutable state : State.t
-  ; mutable last_set : Price.t option
-  ; mutable resumes : int
-  ; mutable waits : int
+  ; anchor : Anchor.t
+  ; exchange : Exchange.t
   }
 
-let create ?(half_life = Time_ns.Span.second) target =
-  if Time_ns.Span.( <= ) half_life Time_ns.Span.zero
-  then raise_s [%message "Anchoring.create: half-life must be positive"];
-  { target
-  ; half_life
-  ; started_at = None
-  ; state = Waiting
-  ; last_set = None
-  ; resumes = 0
-  ; waits = 0
-  }
+let create
+  ?(half_life = Time_ns.Span.second)
+  ~noise_traders
+  ~may_engage
+  ~last_trade
+  ~clamp
+  ~market_sim
+  ~exchange
+  ~symbol
+  (target : Target.t)
+  =
+  let reference =
+    Option.value_or_thunk target.reference ~default:(fun () ->
+      Market_data.Instrument.create Cboe (Symbol.to_string symbol))
+  in
+  let anchor =
+    Anchor.create
+      ~price_factor:target.price_factor
+      ~levels:0
+      ~mark_interval:Time_ns.Span.zero
+      ~noise_traders
+      ~half_life
+      ~may_engage
+      ~last_trade
+      ~step_clock:false
+      ~clamp
+      ~path:target.path
+      ~market_sim
+      ~exchange
+      ~reference
+      ~sim_symbol:symbol
+      ()
+  in
+  { target; anchor; exchange }
 ;;
 
 let target t = t.target
-let state t = t.state
-let last_set t = t.last_set
-let resumes t = t.resumes
-let waits t = t.waits
+let last_set t = Anchor.last_set t.anchor
 
-let update t ~now ~follow ~sim ~symbol =
-  let started_at =
-    match t.started_at with
-    | Some at -> at
-    | None ->
-      t.started_at <- Some now;
-      now
-  in
-  match follow, t.state with
-  | true, _ ->
-    let px = Target.price_at t.target ~elapsed:(Time_ns.diff now started_at) in
-    let resuming = State.equal t.state Waiting in
-    if resuming || not ([%equal: Price.t option] t.last_set (Some px))
-    then (
-      Market_sim.set_reference ~half_life:t.half_life sim symbol px;
-      t.last_set <- Some px);
-    if resuming
-    then (
-      t.state <- Following;
-      t.resumes <- t.resumes + 1)
-  | false, Following ->
-    Market_sim.clear_reference sim symbol;
-    t.state <- Waiting;
-    t.last_set <- None;
-    t.waits <- t.waits + 1
-  | false, Waiting -> ()
+let state t =
+  if Option.is_some (last_set t) && not (Anchor.is_paused t.anchor)
+  then State.Following
+  else Waiting
 ;;
+
+let stats t = Anchor.stats t.anchor
+let resumes t = (stats t).resumes
+let waits t = (stats t).pauses
+let step t = Anchor.step t.anchor ~now:(Exchange.now t.exchange)

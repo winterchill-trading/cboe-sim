@@ -81,7 +81,7 @@ type listing =
   ; mutable ssr : Order_types.Ssr.t
   ; mutable ssr_published : bool
   ; sim : Market_sim.t option
-  ; anchor : Anchoring.t option
+  ; mutable anchor : Anchoring.t option
   ; trades : (Time_ns.t * Price.t) Queue.t
   (** this venue's prints in the LULD reference window, oldest first *)
   ; mutable trades_units : int (** sum of [trades]' prices, in price units *)
@@ -1383,17 +1383,34 @@ let anchor_follows t (l : listing) ~phase =
       || (Phase.equal phase Core && Option.is_none (in_auction_window t ~phase)))
 ;;
 
-let update_anchors t ~phase =
-  List.iter (all_listings t) ~f:(fun l ->
-    match l.anchor, l.sim with
-    | Some anchor, Some sim ->
-      Anchoring.update
-        anchor
-        ~now:(Clock.now t.clock)
-        ~follow:(anchor_follows t l ~phase)
-        ~sim
-        ~symbol:l.lsym
-    | None, _ | _, None -> ())
+let update_anchors t =
+  List.iter (all_listings t) ~f:(fun l -> Option.iter l.anchor ~f:Anchoring.step)
+;;
+
+(* The venue's last print, where the walk restarts when the anchor follows again. *)
+let last_print (l : listing) = Option.map (Queue.last l.trades) ~f:snd
+
+(* Anchor targets stay inside the LULD bands (equities only). *)
+let clamp_to_bands t (l : listing) px =
+  match bands l ~at:(Clock.now t.clock) ~reference:(reference_price t l) with
+  | None -> px
+  | Some { lower; upper } ->
+    Price_anchor.Clamp.within_bands (Instruments.to_engine l.inst) ~lower ~upper px
+;;
+
+let add_anchor t (l : listing) ~sim target =
+  l.anchor
+  <- Some
+       (Anchoring.create
+          ~half_life:t.config.anchor_half_life
+          ~noise_traders:t.config.noise_traders
+          ~may_engage:(fun () -> anchor_follows t l ~phase:(Clock.phase t.clock))
+          ~last_trade:(fun () -> last_print l)
+          ~clamp:(clamp_to_bands t l)
+          ~market_sim:sim
+          ~exchange:t.exchange
+          ~symbol:l.lsym
+          target)
 ;;
 
 let tick t =
@@ -1405,7 +1422,7 @@ let tick t =
     let from = t.last_phase in
     t.last_phase <- phase;
     on_phase_change t ~from ~to_:phase);
-  update_anchors t ~phase;
+  update_anchors t;
   if Clock.has_sessions t.clock
   then (
     let now = Time_ns.now () in
@@ -1503,20 +1520,17 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
         ; ssr = Order_types.Ssr.inactive
         ; ssr_published = false
         ; sim
-        ; anchor =
-            Option.bind sim ~f:(fun _ ->
-              List.Assoc.find config.anchors inst.symbol ~equal:String.equal
-              |> Option.map ~f:(Anchoring.create ~half_life:config.anchor_half_life))
+        ; anchor = None
         ; trades = Queue.create ()
         ; trades_units = 0
         ; auction_orders = []
         });
-  List.iter config.anchors ~f:(fun (symbol, _) ->
+  List.iter config.anchors ~f:(fun (symbol, target) ->
     match Hashtbl.find t.listings symbol with
     | None -> raise_s [%message "anchor for a symbol that is not listed" symbol]
-    | Some { anchor = None; _ } ->
+    | Some { sim = None; _ } ->
       raise_s [%message "anchored listings need noise traders (not a test symbol)" symbol]
-    | Some { anchor = Some _; _ } -> ());
+    | Some ({ sim = Some sim; _ } as l) -> add_anchor t l ~sim target);
   t
 ;;
 

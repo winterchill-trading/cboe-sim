@@ -27,13 +27,14 @@ let show v clock =
   let _, tod = Clock.local clock in
   printf
     !"%s %{sexp:Equities_core.Session.Us_equities.Phase.t} %{sexp:Anchoring.State.t} \
-      resumes=%d waits=%d walk=%s mark=%s luld_ref=%s\n"
+      resumes=%d waits=%d clamped=%d walk=%s mark=%s luld_ref=%s\n"
     (Time_ns.Ofday.to_millisecond_string
        (Time_ns.Ofday.of_span_since_start_of_day_exn tod))
     (Clock.phase clock)
     (Anchoring.state anchor)
     (Anchoring.resumes anchor)
     (Anchoring.waits anchor)
+    (Anchoring.stats anchor).clamped
     (price (Market_sim.reference_price sim (E.Symbol.of_string "AAPL")))
     (price (Exchange.mark (Venue.exchange v) (E.Symbol.of_string "AAPL")))
     (price (Venue.luld_reference v "AAPL"))
@@ -74,17 +75,19 @@ let%expect_test "the anchor waits in the auction windows and resumes at the open
   show v clock;
   [%expect
     {|
-    09:27:00.000 Pre_market Waiting resumes=0 waits=0 walk=230.05 mark=230.05 luld_ref=230.05
-    09:29:59.900 Pre_market Waiting resumes=0 waits=0 walk=228.63 mark=228.63 luld_ref=229.38845588
-    09:30:00.000 Core Following resumes=1 waits=0 walk=228.89 mark=228.89 luld_ref=229.38845588
-    09:32:00.000 Core Following resumes=1 waits=0 walk=232.18 mark=232.18 luld_ref=230.39564564
-    15:55:00.000 Core Waiting resumes=1 waits=1 walk=232.16 mark=232.16 luld_ref=232.2
-    16:00:00.000 Post_market Waiting resumes=1 waits=1 walk=232.62 mark=232.62 luld_ref=233.11339421
+    09:27:00.000 Pre_market Waiting resumes=0 waits=1 clamped=0 walk=230.05 mark=230.05 luld_ref=230.05
+    09:29:59.900 Pre_market Waiting resumes=0 waits=1 clamped=0 walk=228.63 mark=228.63 luld_ref=229.38845588
+    09:30:00.000 Core Following resumes=1 waits=1 clamped=0 walk=228.88 mark=228.88 luld_ref=229.38845588
+    09:32:00.000 Core Following resumes=1 waits=1 clamped=0 walk=232.18 mark=232.18 luld_ref=230.3956006
+    15:55:00.000 Core Waiting resumes=1 waits=2 clamped=0 walk=232.16 mark=232.16 luld_ref=232.2
+    16:00:00.000 Post_market Waiting resumes=1 waits=2 clamped=0 walk=232.62 mark=232.62 luld_ref=233.11339421
     |}]
 ;;
 
-let%expect_test "LULD bands follow the venue's own prints, and a pause stops the anchor" =
-  (* 230 for two minutes, then a jump to 260 (13%, beyond the 5% band). *)
+let%expect_test "the target stays inside the LULD bands, which follow the venue's prints" =
+  (* 230 for two minutes, then a jump to 260 (13%, beyond the 5% band). The clamp keeps
+     the target 30 bps inside the bands, so the walk climbs with the bands instead of
+     running into a LULD pause. *)
   let target =
     let t0 = Time_ns.epoch in
     Anchoring.Target.series
@@ -94,25 +97,25 @@ let%expect_test "LULD bands follow the venue's own prints, and a pause stops the
     |> ok_exn
   in
   let v, clock = venue ~at:"10:00:00" target in
-  let anchor = Venue.anchor v "AAPL" |> Option.value_exn in
   Venue.tick v;
   tick_n v clock 1_199;
   show v clock;
-  let last = ref (Anchoring.state anchor, Anchoring.waits anchor) in
-  for _ = 1 to 6_000 do
-    tick_n v clock 1;
-    let now = Anchoring.state anchor, Anchoring.waits anchor in
-    if not ([%equal: Anchoring.State.t * int] now !last)
-    then (
-      last := now;
-      show v clock)
+  for _ = 1 to 10 do
+    tick_n v clock 600;
+    show v clock
   done;
-  show v clock;
   [%expect
     {|
-    10:01:59.900 Core Following resumes=1 waits=0 walk=230.01 mark=230.01 luld_ref=229.9777459
-    10:02:18.700 Core Waiting resumes=1 waits=1 walk=259.95 mark=259.95 luld_ref=236.59773841
-    10:07:18.700 Core Following resumes=2 waits=1 walk=259.94 mark=259.94 luld_ref=259.94
-    10:11:59.900 Core Following resumes=2 waits=1 walk=260.13 mark=260.13 luld_ref=260.00191094
+    10:01:59.900 Core Following resumes=0 waits=0 clamped=0 walk=230.01 mark=230.01 luld_ref=229.9777459
+    10:02:59.900 Core Following resumes=0 waits=0 clamped=122 walk=246.59 mark=246.59 luld_ref=235.5094824
+    10:03:59.900 Core Following resumes=0 waits=0 clamped=184 walk=248.72 mark=248.72 luld_ref=237.7243824
+    10:04:59.900 Core Following resumes=0 waits=0 clamped=264 walk=251.04 mark=251.04 luld_ref=239.88026425
+    10:05:59.900 Core Following resumes=0 waits=0 clamped=395 walk=254.57 mark=254.57 luld_ref=243.26612516
+    10:06:59.900 Core Following resumes=0 waits=0 clamped=548 walk=260.16 mark=260.16 luld_ref=249.06705276
+    10:07:59.900 Core Following resumes=0 waits=0 clamped=548 walk=260.04 mark=260.04 luld_ref=253.81880804
+    10:08:59.900 Core Following resumes=0 waits=0 clamped=548 walk=260.09 mark=260.09 luld_ref=255.98449319
+    10:09:59.900 Core Following resumes=0 waits=0 clamped=548 walk=259.97 mark=259.97 luld_ref=257.85364069
+    10:10:59.900 Core Following resumes=0 waits=0 clamped=548 walk=259.99 mark=259.99 luld_ref=259.26516129
+    10:11:59.900 Core Following resumes=0 waits=0 clamped=548 walk=259.83 mark=259.83 luld_ref=260.01225641
     |}]
 ;;

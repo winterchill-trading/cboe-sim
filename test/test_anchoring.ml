@@ -26,7 +26,11 @@ let%expect_test "fixed price with a compounded daily drift" =
     172800.0s 204.02
     |}];
   print_s [%sexp (Anchoring.Target.parse_fixed "200" |> ok_exn : Anchoring.Target.t)];
-  [%expect {| (Fixed (price 200) (drift_bps_per_day 0)) |}];
+  [%expect
+    {|
+    ((path (Fixed (price 200) (drift_bps_per_day 0))) (price_factor 1)
+     (reference ()))
+    |}];
   List.iter [ "0"; "x"; "1,2,3" ] ~f:(fun s ->
     print_s [%sexp (Result.is_error (Anchoring.Target.parse_fixed s) : bool)]);
   [%expect {|
@@ -119,7 +123,9 @@ let%expect_test "recorded crypto reference from event logs, one point per second
     let%bind target =
       Anchoring.Target.load_norm ~factor:0.006 ~dir instrument ~from:date ~to_:date
     in
-    (* The last price in each second: the BBO mids at 0.4 s and 1.9 s, the trade at 5 s. *)
+    (* The book mid wins over trades once there is a book, and a point is kept when the
+       price changed at least a second after the last kept one: 0 s (the trade), 1.2 s
+       (the mid of the BBO at 0.4 s) and 5 s (the mid of the BBO at 1.9 s). *)
     print_prices (ok_exn target) [ 0.; 1.; 1.5; 4.6; 10. ];
     let%map missing =
       Anchoring.Target.load_norm
@@ -132,16 +138,16 @@ let%expect_test "recorded crypto reference from event logs, one point per second
     print_s [%sexp (Result.is_error missing : bool)];
     [%expect
       {|
-           0.0s 600.066
-           1.0s 600.066
-           1.5s 601.206
-           4.6s 594
-          10.0s 594
+           0.0s 600
+           1.0s 600
+           1.5s 600.066
+           4.6s 600.066
+          10.0s 601.206
       true
       |}])
 ;;
 
-let%expect_test "update: follows, waits once, resumes" =
+let%expect_test "step: follows, pauses once, restarts from the last print, clamps" =
   let symbol = E.Symbol.of_string "AAPL" in
   let exchange =
     Exchange_core_engine.Exchange.create
@@ -164,14 +170,24 @@ let%expect_test "update: follows, waits once, resumes" =
       }
       exchange
   in
+  let follow = ref false in
+  let last_print = ref None in
+  let upper = ref (px "1000") in
   let a =
     Anchoring.create
       ~half_life:(Time_ns.Span.of_sec 0.1)
+      ~noise_traders:(Market_sim.config sim).noise_traders
+      ~may_engage:(fun () -> !follow)
+      ~last_trade:(fun () -> !last_print)
+      ~clamp:(fun p -> E.Price.min p !upper)
+      ~market_sim:sim
+      ~exchange
+      ~symbol
       (Anchoring.Target.fixed (px "120") |> ok_exn)
   in
   let show label =
     printf
-      !"%s: %{sexp:Anchoring.State.t} walk=%s resumes=%d waits=%d\n"
+      !"%s: %{sexp:Anchoring.State.t} walk=%s resumes=%d waits=%d clamped=%d\n"
       label
       (Anchoring.state a)
       (Option.value_map
@@ -180,10 +196,12 @@ let%expect_test "update: follows, waits once, resumes" =
          ~f:E.Price.to_string)
       (Anchoring.resumes a)
       (Anchoring.waits a)
+      (Anchoring.stats a).clamped
   in
-  let run ~follow n =
+  let run ~follow:f n =
+    follow := f;
     for _ = 1 to n do
-      Anchoring.update a ~now:t0 ~follow ~sim ~symbol;
+      Anchoring.step a;
       Market_sim.tick sim
     done
   in
@@ -196,15 +214,20 @@ let%expect_test "update: follows, waits once, resumes" =
   show "open, ten half-lives";
   run ~follow:false 5;
   show "pause";
+  last_print := Some (px "90");
   run ~follow:true 1;
-  show "resumed";
+  show "resumed from the print";
+  upper := px "110";
+  run ~follow:true 10;
+  show "clamped";
   [%expect
     {|
-    start: Waiting walk=100 resumes=0 waits=0
-    auction: Waiting walk=100 resumes=0 waits=0
-    open, one half-life: Following walk=110 resumes=1 waits=0
-    open, ten half-lives: Following walk=120 resumes=1 waits=0
-    pause: Waiting walk=120 resumes=1 waits=1
-    resumed: Following walk=120 resumes=2 waits=1
+    start: Waiting walk=100 resumes=0 waits=0 clamped=0
+    auction: Waiting walk=100 resumes=0 waits=1 clamped=0
+    open, one half-life: Following walk=110 resumes=1 waits=1 clamped=0
+    open, ten half-lives: Following walk=120 resumes=1 waits=1 clamped=0
+    pause: Waiting walk=120 resumes=1 waits=2 clamped=0
+    resumed from the print: Following walk=105 resumes=2 waits=2 clamped=0
+    clamped: Following walk=110 resumes=2 waits=2 clamped=1
     |}]
 ;;
