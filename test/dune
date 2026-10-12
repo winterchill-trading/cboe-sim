@@ -3,6 +3,13 @@
  (inline_tests
   (flags
    (:standard -source-tree-root .)))
- (libraries core cboe-sim.wire)
+ (libraries
+  async
+  cboe-sim
+  cboe-sim.wire
+  core
+  equities-core
+  exchange-core
+  exchange-core-engine)
  (preprocess
   (pps ppx_jane)))
