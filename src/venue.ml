@@ -1467,12 +1467,6 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
     }
   in
   step t;
-  List.iter config.anchors ~f:(fun (symbol, _) ->
-    match List.find instruments ~f:(fun i -> String.equal i.symbol symbol) with
-    | None -> raise_s [%message "anchor for a symbol that is not listed" symbol]
-    | Some _ when not (config.noise && config.noise_traders > 0) ->
-      raise_s [%message "anchors need noise traders (-noise)" symbol]
-    | Some _ -> ());
   List.iteri instruments ~f:(fun i inst ->
     let lsym = E.Symbol.of_string inst.symbol in
     let sim =
@@ -1517,6 +1511,12 @@ let create ?(config = Config.default) ~clock ~emit_user ~emit_feed instruments =
         ; trades_units = 0
         ; auction_orders = []
         });
+  List.iter config.anchors ~f:(fun (symbol, _) ->
+    match Hashtbl.find t.listings symbol with
+    | None -> raise_s [%message "anchor for a symbol that is not listed" symbol]
+    | Some { anchor = None; _ } ->
+      raise_s [%message "anchored listings need noise traders (not a test symbol)" symbol]
+    | Some { anchor = Some _; _ } -> ());
   t
 ;;
 
