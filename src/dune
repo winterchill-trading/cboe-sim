@@ -5,6 +5,7 @@
   async
   async_websocket
   cboe-sim.wire
+  cohttp
   cohttp-async
   core
   equities-core
@@ -13,6 +14,7 @@
   fixed-decimal
   http
   order-book
+  uri
   yojson)
  (preprocess
   (pps ppx_jane)))
