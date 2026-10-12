@@ -94,7 +94,8 @@ let command =
        book is driven by noise traders. -anchor-series and -anchor-fixed pull a \
        listing's noise traders towards a reference price (mean reversion with \
        -anchor-half-life-ms) during core trading; auctions and LULD pauses own the price \
-       while the anchor waits. Anchors turn -noise on.")
+       while the anchor waits, and the target stays inside the LULD bands. Anchors turn \
+       -noise on.")
     (let%map_open.Command gateway_port =
        flag "-gateway-port" (optional_with_default 9300 int) ~doc:"PORT BOE port"
      and feed_port =
@@ -153,8 +154,8 @@ let command =
          "-anchor-scaled"
          (listed string)
          ~doc:
-           "VENUE:SYMBOL=SYM,FACTOR anchor SYM to a recorded reference (trade prices and \
-            BBO mids from -anchor-norm) multiplied by FACTOR (repeatable)"
+           "VENUE:SYMBOL=SYM,FACTOR anchor SYM to a recorded reference (book mids, else \
+            trade prices, from -anchor-norm) multiplied by FACTOR (repeatable)"
      and anchor_norm =
        flag
          "-anchor-norm"
