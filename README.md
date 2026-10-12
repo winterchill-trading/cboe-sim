@@ -51,6 +51,10 @@ Listings: equities on matching unit 1 with Tier 1 LULD bands (ZVZZT Tier 2); SPY
 expiring 2026-12-18 at strikes 590/600/610, calls `SPY001`-`SPY003` and puts
 `SPY004`-`SPY006`, on unit 2 (penny ticks, contracts, core hours only).
 
+CI installs the pinned siblings and the opam dependencies through the shared
+[ox-setup](https://github.com/winterchill-trading/infra/blob/main/docs/ci.md) action, which
+caches the built opam switch between runs.
+
 ## Play with the CLI
 
 ```sh
