@@ -11,10 +11,10 @@ let return_fields (r : Boe.Return_fields.t) =
   List.filter_opt
     [ opt "sym" Fn.id r.symbol
     ; opt "side" Char.to_string r.side
-    ; opt "px" px r.price
+    ; opt "px" px (Option.filter r.price ~f:(fun p -> p <> 0))
     ; opt "qty" Int.to_string r.order_qty
     ; opt "leaves" Int.to_string r.leaves_qty
-    ; opt "orig" Fn.id r.orig_cl_ord_id
+    ; opt "orig" Fn.id (Option.filter r.orig_cl_ord_id ~f:(Fn.non String.is_empty))
     ]
   |> String.concat ~sep:" "
 ;;
