@@ -30,7 +30,7 @@ opam exec --switch 5.2.0+ox -- dune build --root .. @cboe-sim/all
 opam exec --switch 5.2.0+ox -- dune build --root .. @cboe-sim/runtest
 ```
 
-Parallel work with another agent: prefix both with `DUNE_BUILD_DIR=../_build-cboe-sim`.
+Parallel work with another agent: prefix both with `DUNE_BUILD_DIR=_build-cboe-sim`.
 
 Run the simulator (ports are the README defaults):
 

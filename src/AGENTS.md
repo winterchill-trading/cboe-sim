@@ -13,7 +13,7 @@ The `cboe-sim` library (module `Cboe_sim`): the venue on top of `exchange-core-e
 | `Anchoring` | Wrapper over `Price_anchor.Anchor`, one per anchored listing |
 
 Build and test: `opam exec --switch 5.2.0+ox -- dune build --root .. @cboe-sim/all` (add
-`DUNE_BUILD_DIR=../_build-cboe-sim` when working in parallel).
+`DUNE_BUILD_DIR=_build-cboe-sim` when working in parallel).
 
 Rules:
 - Name a module `Boe_session`, not `Session`: `Equities_core.Session` is opened in the same
